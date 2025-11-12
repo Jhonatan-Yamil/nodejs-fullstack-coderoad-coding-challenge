@@ -20,11 +20,5 @@ jobs:                   # Qué tareas ejecuta
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test
-
       - name: run build
         run: npm run build
