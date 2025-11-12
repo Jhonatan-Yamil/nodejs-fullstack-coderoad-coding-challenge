@@ -8,10 +8,6 @@ interface Item {
   description: string
 }
 
-interface ItemPayload {
-  title: string
-  description: string
-}
 
 export default function App(): JSX.Element {
   const [items, setItems] = useState<Item[]>([])
