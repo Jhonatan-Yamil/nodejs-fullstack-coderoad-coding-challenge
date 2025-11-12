@@ -1,26 +1,31 @@
 name: CI Pipeline
 
-on:                     # Cuándo se ejecuta
+on:
   push:
-    branches: [ main ]  # Solo cuando hay un push en main
+    branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
 
-jobs:                   # Qué tareas ejecuta
+jobs:
   build:
-    runs-on: ubuntu-latest  # Máquina virtual de GitHub
+    runs-on: ubuntu-latest
 
-    steps:               # Pasos a ejecutar
+    steps:
       - name: Checkout code
-        uses: actions/checkout@v4   # Descarga el código del repo
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: run build
+      - name: Install dependencies
+        run: |
+          cd client
+          npm ci         
+          
+      - name: Run build
         run: |
           cd client
           npm run build
