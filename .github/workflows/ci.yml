@@ -5,6 +5,7 @@ on:                     # Cuándo se ejecuta
     branches: [ main ]  # Solo cuando hay un push en main
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:                   # Qué tareas ejecuta
   build:
@@ -24,6 +25,6 @@ jobs:                   # Qué tareas ejecuta
 
       - name: Run tests
         run: npm test
-        
+
       - name: run build
         run: npm run build
