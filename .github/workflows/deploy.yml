@@ -6,49 +6,36 @@ on:
 
 jobs:
   deploy:
-    name: Build and deploy to EC2 instances
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Build client
+      - name: Install & build client
         working-directory: client
         run: |
           npm ci
           npm run build
 
-      - name: Pack client dist
-        run: |
-          # Assumes Vite output in client/dist
-          tar -czf client.tar.gz -C client/dist .
+      - name: Pack client
+        run: tar -czf client.tar.gz -C client/dist .
 
-      - name: Build server (if build script exists)
+      - name: Install & build server
         working-directory: server
         run: |
           npm ci
-          if grep -q "\"build\"" package.json; then
-            npm run build || true
-          else
-            echo "No build script found in server/package.json; will deploy source files"
-          fi
+          npm run build 2>/dev/null || true
 
       - name: Pack server
         run: |
-          # Prefer dist if exists, else pack whole server folder
           if [ -d server/dist ]; then
             tar -czf server.tar.gz -C server/dist .
           else
             tar -czf server.tar.gz -C server .
           fi
 
-      - name: Copy artifacts to instance
+      - name: Upload artifacts to EC2
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -57,7 +44,7 @@ jobs:
           source: "client.tar.gz,server.tar.gz"
           target: "/tmp/deploy"
 
-      - name: Run remote deploy commands
+      - name: Deploy on EC2
         uses: appleboy/ssh-action@v0.1.6
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -65,56 +52,28 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           script: |
             set -e
-            DST="/tmp/deploy"
-            # Edit these default paths in case you want other locations on the server
-            # Deploy into the SSH user's home to avoid permission issues
-            CLIENT_PATH="/home/${{ secrets.EC2_USER }}/client"
-            SERVER_PATH="/home/${{ secrets.EC2_USER }}/server"
 
-            mkdir -p "$CLIENT_PATH"
-            mkdir -p "$SERVER_PATH"
+            CLIENT_DIR="$HOME/client"
+            SERVER_DIR="$HOME/server"
+            mkdir -p "$CLIENT_DIR" "$SERVER_DIR"
 
-            tar -xzf "$DST/client.tar.gz" -C "$CLIENT_PATH"
-            tar -xzf "$DST/server.tar.gz" -C "$SERVER_PATH"
+            # unpack client and server
+            tar -xzf /tmp/deploy/client.tar.gz -C "$CLIENT_DIR"
+            tar -xzf /tmp/deploy/server.tar.gz -C "$SERVER_DIR"
 
-            # Backup current /var/www/html and overwrite with the new client build
-            WWW_ROOT="/var/www/html"
-            sudo mkdir -p /tmp/backups || true
-            sudo tar -czf "/tmp/backups/www-html-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var www/html || true
+            # deploy to /var/www/html
+            sudo rsync -av --delete "$CLIENT_DIR/" /var/www/html/
 
-            # Detect nginx user (fallback to www-data)
-            NGX_USER=$(ps -eo user,comm | awk '/nginx: master/{print $1; exit}') || true
-            if [ -z "$NGX_USER" ]; then
-              NGX_USER=$(ps -eo user,comm | awk '/nginx/{print $1; exit}') || true
-            fi
-            if [ -z "$NGX_USER" ]; then
-              NGX_USER=www-data
+            # server install + restart
+            (cd "$SERVER_DIR" && npm ci --only=production)
+
+            if command -v pm2 >/dev/null; then
+              pm2 restart server || pm2 start npm --name server -- start
+            else
+              sudo systemctl restart server 2>/dev/null || true
             fi
 
-            # Overwrite web root with built client using sudo rsync (preserves permissions)
-            sudo rsync -av --delete "$CLIENT_PATH/" "$WWW_ROOT/"
-            sudo chown -R "$NGX_USER":"$NGX_USER" "$WWW_ROOT" || true
-            sudo find "$WWW_ROOT" -type d -exec chmod 755 {} \; || true
-            sudo find "$WWW_ROOT" -type f -exec chmod 644 {} \; || true
+            # reload nginx if available
+            sudo systemctl reload nginx 2>/dev/null || true
 
-            # Install server dependencies and restart backend (no sudo for install/run)
-            if command -v npm >/dev/null 2>&1; then
-              cd "$SERVER_PATH" || true
-              npm ci --only=production || true
-              if command -v pm2 >/dev/null 2>&1; then
-                pm2 restart server || pm2 start npm --name server -- start
-              else
-                if command -v systemctl >/dev/null 2>&1; then
-                  sudo systemctl try-restart server || true
-                else
-                  nohup npm run start &>/dev/null &
-                fi
-              fi
-            fi
-
-            # Reload nginx to pick up new static files
-            if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
-              sudo systemctl reload nginx || true
-            fi
-
-            echo "Deploy finished on $HOST"
+            echo "Deploy finished!"
