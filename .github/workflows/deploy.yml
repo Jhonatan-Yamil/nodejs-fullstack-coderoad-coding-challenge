@@ -1,0 +1,98 @@
+name: Deploy client + server to EC2
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    name: Build and deploy to EC2 instances
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build client
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+
+      - name: Pack client dist
+        run: |
+          # Assumes Vite output in client/dist
+          tar -czf client.tar.gz -C client/dist .
+
+      - name: Build server (if build script exists)
+        working-directory: server
+        run: |
+          npm ci
+          if grep -q "\"build\"" package.json; then
+            npm run build || true
+          else
+            echo "No build script found in server/package.json; will deploy source files"
+          fi
+
+      - name: Pack server
+        run: |
+          # Prefer dist if exists, else pack whole server folder
+          if [ -d server/dist ]; then
+            tar -czf server.tar.gz -C server/dist .
+          else
+            tar -czf server.tar.gz -C server .
+          fi
+
+      - name: Copy artifacts to instance
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          source: "client.tar.gz,server.tar.gz"
+          target: "/tmp/deploy"
+
+      - name: Run remote deploy commands
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          script: |
+            set -e
+            DST="/tmp/deploy"
+            # Edit these default paths in case you want other locations on the server
+            CLIENT_PATH="/var/www/client"
+            SERVER_PATH="/home/${{ secrets.EC2_USER }}/server"
+
+            mkdir -p "$CLIENT_PATH"
+            mkdir -p "$SERVER_PATH"
+
+            tar -xzf "$DST/client.tar.gz" -C "$CLIENT_PATH"
+            tar -xzf "$DST/server.tar.gz" -C "$SERVER_PATH"
+
+            # Install server dependencies and restart
+            if command -v npm >/dev/null 2>&1; then
+              cd "$SERVER_PATH" || true
+              npm ci --only=production || true
+              if command -v pm2 >/dev/null 2>&1; then
+                pm2 restart server || pm2 start npm --name server -- start
+              else
+                if command -v systemctl >/dev/null 2>&1; then
+                  systemctl try-restart server || true
+                else
+                  nohup npm run start &>/dev/null &
+                fi
+              fi
+            fi
+
+            if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+              systemctl reload nginx || true
+            fi
+
+            echo "Deploy finished on $HOST"
