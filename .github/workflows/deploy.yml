@@ -77,7 +77,27 @@ jobs:
             tar -xzf "$DST/client.tar.gz" -C "$CLIENT_PATH"
             tar -xzf "$DST/server.tar.gz" -C "$SERVER_PATH"
 
-            # Install server dependencies and restart
+            # Backup current /var/www/html and overwrite with the new client build
+            WWW_ROOT="/var/www/html"
+            sudo mkdir -p /tmp/backups || true
+            sudo tar -czf "/tmp/backups/www-html-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var www/html || true
+
+            # Detect nginx user (fallback to www-data)
+            NGX_USER=$(ps -eo user,comm | awk '/nginx: master/{print $1; exit}') || true
+            if [ -z "$NGX_USER" ]; then
+              NGX_USER=$(ps -eo user,comm | awk '/nginx/{print $1; exit}') || true
+            fi
+            if [ -z "$NGX_USER" ]; then
+              NGX_USER=www-data
+            fi
+
+            # Overwrite web root with built client using sudo rsync (preserves permissions)
+            sudo rsync -av --delete "$CLIENT_PATH/" "$WWW_ROOT/"
+            sudo chown -R "$NGX_USER":"$NGX_USER" "$WWW_ROOT" || true
+            sudo find "$WWW_ROOT" -type d -exec chmod 755 {} \; || true
+            sudo find "$WWW_ROOT" -type f -exec chmod 644 {} \; || true
+
+            # Install server dependencies and restart backend (no sudo for install/run)
             if command -v npm >/dev/null 2>&1; then
               cd "$SERVER_PATH" || true
               npm ci --only=production || true
@@ -85,15 +105,16 @@ jobs:
                 pm2 restart server || pm2 start npm --name server -- start
               else
                 if command -v systemctl >/dev/null 2>&1; then
-                  systemctl try-restart server || true
+                  sudo systemctl try-restart server || true
                 else
                   nohup npm run start &>/dev/null &
                 fi
               fi
             fi
 
+            # Reload nginx to pick up new static files
             if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
-              systemctl reload nginx || true
+              sudo systemctl reload nginx || true
             fi
 
             echo "Deploy finished on $HOST"
