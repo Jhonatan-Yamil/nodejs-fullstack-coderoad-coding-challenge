@@ -67,7 +67,8 @@ jobs:
             set -e
             DST="/tmp/deploy"
             # Edit these default paths in case you want other locations on the server
-            CLIENT_PATH="/var/www/client"
+            # Deploy into the SSH user's home to avoid permission issues
+            CLIENT_PATH="/home/${{ secrets.EC2_USER }}/client"
             SERVER_PATH="/home/${{ secrets.EC2_USER }}/server"
 
             mkdir -p "$CLIENT_PATH"
